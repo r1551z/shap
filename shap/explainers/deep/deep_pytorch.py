@@ -70,12 +70,13 @@ class PyTorchDeepExplainer(Explainer):
         Recursively for non-container layers
         """
         handles_list = []
-        for child in model.children():
-            if 'nn.modules.container' in str(type(child)):
+        model_children = list(model.children())
+        if model_children:
+            for child in model_children:
                 handles_list.extend(self.add_handles(child, forward_handle, backward_handle))
-            else:
-                handles_list.append(child.register_forward_hook(forward_handle))
-                handles_list.append(child.register_backward_hook(backward_handle))
+        else:  # leaves
+            handles_list.append(model.register_forward_hook(forward_handle))
+            handles_list.append(model.register_backward_hook(backward_handle))
         return handles_list
 
     def remove_attributes(self, model):
@@ -127,7 +128,7 @@ class PyTorchDeepExplainer(Explainer):
                 grads.append(grad)
             return grads
 
-    def shap_values(self, X, ranked_outputs=None, output_rank_order="max"):
+    def shap_values(self, X, ranked_outputs=None, output_rank_order="max", check_additivity=False):
 
         # X ~ self.model_input
         # X_data ~ self.data
@@ -139,7 +140,7 @@ class PyTorchDeepExplainer(Explainer):
         else:
             assert type(X) == list, "Expected a list of model inputs!"
 
-        X = [x.to(self.device) for x in X]
+        X = [x.detach().to(self.device) for x in X]
 
         if ranked_outputs is not None and self.multi_output:
             with torch.no_grad():

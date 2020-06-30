@@ -5,6 +5,8 @@ import scipy as sp
 from scipy.spatial.distance import pdist
 import sys
 import warnings
+import sklearn
+import importlib
 
 if (sys.version_info < (3, 0)):
     warnings.warn("As of version 0.29.0 shap only supports Python 3 (not 2)!")
@@ -118,7 +120,7 @@ class SparseData(Data):
 
 class DenseData(Data):
     def __init__(self, data, group_names, *args):
-        self.groups = args[0] if len(args) > 0 and args[0] != None else [np.array([i]) for i in range(len(group_names))]
+        self.groups = args[0] if len(args) > 0 and args[0] is not None else [np.array([i]) for i in range(len(group_names))]
 
         l = sum(len(g) for g in self.groups)
         num_samples = data.shape[0]
@@ -265,7 +267,7 @@ def convert_name(ind, shap_values, feature_names):
             elif ind == "sum()": 
                 return "sum()"
             else:
-                print("Could not find feature named: " + ind)
+                raise ValueError("Could not find feature named: " + ind)
                 return None
         else:
             return nzinds[0]
@@ -302,7 +304,9 @@ def approximate_interactions(index, shap_values, X, feature_names=None):
     inc = max(min(int(len(x) / 10.0), 50), 1)
     interactions = []
     for i in range(X.shape[1]):
-        val_other = X[inds, i][srt].astype(np.float)
+        encoded_val_other = encode_array_if_needed(X[inds, i][srt], dtype=np.float)
+
+        val_other = encoded_val_other
         v = 0.0
         if not (i == index or np.sum(np.abs(val_other)) < 1e-8):
             for j in range(0, len(x), inc):
@@ -310,7 +314,7 @@ def approximate_interactions(index, shap_values, X, feature_names=None):
                     v += abs(np.corrcoef(shap_ref[j:j + inc], val_other[j:j + inc])[0, 1])
         val_v = v
 
-        val_other = np.isnan(X[inds, i][srt].astype(np.float))
+        val_other = np.isnan(encoded_val_other)
         v = 0.0
         if not (i == index or np.sum(np.abs(val_other)) < 1e-8):
             for j in range(0, len(x), inc):
@@ -321,3 +325,94 @@ def approximate_interactions(index, shap_values, X, feature_names=None):
         interactions.append(max(val_v, nan_v))
 
     return np.argsort(-np.abs(interactions))
+
+
+def sample(X, nsamples=100, random_state=0):
+    if nsamples >= X.shape[0]:
+        return X
+    else:
+        return sklearn.utils.resample(X, n_samples=nsamples, random_state=random_state)
+
+def safe_isinstance(obj, class_path_str):
+    """
+    Acts as a safe version of isinstance without having to explicitly
+    import packages which may not exist in the users environment.
+
+    Checks if obj is an instance of type specified by class_path_str.
+
+    Parameters
+    ----------
+    obj: Any
+        Some object you want to test against
+    class_path_str: str or list
+        A string or list of strings specifying full class paths
+        Example: `sklearn.ensemble.RandomForestRegressor`
+
+    Returns
+    --------
+    bool: True if isinstance is true and the package exists, False otherwise
+    """
+    if isinstance(class_path_str, str):
+        class_path_strs = [class_path_str]
+    elif isinstance(class_path_str, list) or isinstance(class_path_str, tuple):
+        class_path_strs = class_path_str
+    else:
+        class_path_strs = ['']
+    
+    # try each module path in order
+    for class_path_str in class_path_strs:
+        if "." not in class_path_str:
+            raise ValueError("class_path_str must be a string or list of strings specifying a full \
+                module path to a class. Eg, 'sklearn.ensemble.RandomForestRegressor'")
+
+        # Splits on last occurence of "."
+        module_name, class_name = class_path_str.rsplit(".", 1)
+
+        #Check module exists
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except:
+            spec = None
+        if spec is None:
+            continue
+
+        module = importlib.import_module(module_name)
+
+        #Get class
+        _class = getattr(module, class_name, None)
+        if _class is None:
+            continue
+        
+        return isinstance(obj, _class)
+
+    return False
+
+
+def format_value(s, format_str):
+    """ Strips trailing zeros and uses a unicode minus sign.
+    """
+
+    if type(s) is not str:
+        s = format_str % s
+    s = re.sub(r'\.?0+$', '', s)
+    if s[0] == "-":
+        s = u"\u2212" + s[1:]
+    return s
+
+
+def partition_tree(X, metric="correlation"):
+    D = sp.spatial.distance.pdist(X.fillna(X.mean()).T, metric=metric)
+    return sp.cluster.hierarchy.complete(D)
+
+class SHAPError(Exception):
+    pass
+
+
+def encode_array_if_needed(arr, dtype=np.float64):
+    try:
+        return arr.astype(dtype)
+    except ValueError:
+        unique_values = np.unique(arr)
+        encoding_dict = {string: index for index, string in enumerate(unique_values)}
+        encoded_array = np.array([encoding_dict[string] for string in arr], dtype=dtype)
+        return encoded_array

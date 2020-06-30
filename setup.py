@@ -53,11 +53,14 @@ class build_ext(_build_ext):
         self.include_dirs.append(numpy.get_include())
 
 
-def run_setup(with_binary=True, test_xgboost=True, test_lightgbm=True, test_catboost=True):
+def run_setup(with_binary=True, test_xgboost=True, test_lightgbm=True, test_catboost=True, test_spark=True):
     ext_modules = []
     if with_binary:
+        compile_args = []
+        if sys.platform == 'zos':
+            compile_args.append('-qlonglong')
         ext_modules.append(
-            Extension('shap._cext', sources=['shap/_cext.cc'])
+            Extension('shap._cext', sources=['shap/_cext.cc'], extra_compile_args=compile_args)
         )
 
     tests_require = ['nose']
@@ -67,6 +70,19 @@ def run_setup(with_binary=True, test_xgboost=True, test_lightgbm=True, test_catb
         tests_require += ['lightgbm']
     if test_catboost:
         tests_require += ['catboost']
+    if test_spark:
+        tests_require += ['pyspark']
+
+    extras_require = {
+        'plots': [
+            'matplotlib',
+            'ipython'
+        ],
+        'others': [
+            'lime',
+        ],
+    }
+    extras_require['all'] = list(set(i for val in extras_require.values() for i in val))
 
     setup(
         name='shap',
@@ -88,7 +104,8 @@ def run_setup(with_binary=True, test_xgboost=True, test_lightgbm=True, test_catb
         package_data={'shap': ['plots/resources/*', 'tree_shap.h']},
         cmdclass={'build_ext': build_ext},
         setup_requires=['numpy'],
-        install_requires=['numpy', 'scipy', 'scikit-learn', 'matplotlib', 'pandas', 'tqdm>4.25.0', 'ipython', 'scikit-image'],
+        install_requires=['numpy', 'scipy', 'scikit-learn', 'pandas', 'tqdm>4.25.0'],
+        extras_require=extras_require,
         test_suite='nose.collector',
         tests_require=tests_require,
         ext_modules=ext_modules,
@@ -130,4 +147,4 @@ def try_run_setup(**kwargs):
 
 # we seem to need this import guard for appveyor
 if __name__ == "__main__":
-    try_run_setup(with_binary=True, test_xgboost=True, test_lightgbm=True)
+    try_run_setup(with_binary=True, test_xgboost=True, test_lightgbm=True, test_spark=True)

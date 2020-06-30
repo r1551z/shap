@@ -115,10 +115,17 @@ def draw_labels(fig, ax, out_value, features, feature_type, offset_text, total_e
             text = feature[2]
         else:
             text = feature[2] + ' = ' + feature[1]
+
+        if text_rotation is not 0:
+            va_alignment = 'top'
+        else:
+            va_alignment = 'baseline'
+
         text_out_val = plt.text(start_text - sign * offset_text,
                                 -0.15, text,
                                 fontsize=12, color=colors[0],
                                 horizontalalignment=alignement,
+                                va=va_alignment,
                                 rotation=text_rotation)
         text_out_val.set_bbox(dict(facecolor='none', edgecolor='none'))
         
@@ -186,7 +193,7 @@ def draw_labels(fig, ax, out_value, features, feature_type, offset_text, total_e
     
     cm = matplotlib.colors.LinearSegmentedColormap.from_list('cm', colors)
     
-    Z, Z2 = np.meshgrid(np.linspace(0, 10), np.linspace(-10, 10))
+    _, Z2 = np.meshgrid(np.linspace(0, 10), np.linspace(-10, 10))
     im = plt.imshow(Z2, interpolation='quadric', cmap=cm,
                     vmax=0.01, alpha=0.3,
                     origin='lower', extent=extent_shading,
@@ -333,7 +340,7 @@ def update_axis_limits(ax, total_pos, pos_features, total_neg,
 def draw_additive_plot(data, figsize, show, text_rotation=0):
     """Draw additive plot."""
     # Turn off interactive plot
-    if show == False:
+    if show is False:
         plt.ioff()
     
     # Format data
@@ -390,7 +397,13 @@ def draw_additive_plot(data, figsize, show, text_rotation=0):
     # Add output label
     out_names = data['outNames'][0]
     draw_output_element(out_names, out_value, ax)
-    
+
+    # Scale axis
+    if data['link'] == 'logit':
+        plt.xscale('logit')
+        ax.xaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax.ticklabel_format(style='plain')
+
     if show:
         plt.show()
     else:

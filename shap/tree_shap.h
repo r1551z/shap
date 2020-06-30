@@ -13,34 +13,20 @@
 #include <ctime>
 #if defined(_WIN32) || defined(WIN32)
     #include <malloc.h>
+#elif defined(__MVS__)
+    #include <stdlib.h>
 #else
     #include <alloca.h>
 #endif
 using namespace std;
 
 typedef double tfloat;
+typedef tfloat (* transform_f)(const tfloat margin, const tfloat y);
 
 namespace FEATURE_DEPENDENCE {
     const unsigned independent = 0;
     const unsigned tree_path_dependent = 1;
     const unsigned global_path_dependent = 2;
-}
-
-namespace MODEL_TRANSFORM {
-    const unsigned identity = 0;
-    const unsigned logistic = 1;
-    const unsigned logistic_nlogloss = 2;
-    const unsigned squared_loss = 3;
-}
-
-namespace OBJECTIVE { 
-    const unsigned squared_error = 0;
-    const unsigned logistic = 1;
-}
-
-namespace TRANSFORM { 
-    const unsigned identity = 0;
-    const unsigned logistic = 1;
 }
 
 struct TreeEnsemble {
@@ -53,14 +39,14 @@ struct TreeEnsemble {
     tfloat *node_sample_weights;
     unsigned max_depth;
     unsigned tree_limit;
-    tfloat base_offset;
+    tfloat *base_offset;
     unsigned max_nodes;
     unsigned num_outputs;
 
     TreeEnsemble() {}
     TreeEnsemble(int *children_left, int *children_right, int *children_default, int *features,
                  tfloat *thresholds, tfloat *values, tfloat *node_sample_weights,
-                 unsigned max_depth, unsigned tree_limit, tfloat base_offset,
+                 unsigned max_depth, unsigned tree_limit, tfloat *base_offset,
                  unsigned max_nodes, unsigned num_outputs) :
         children_left(children_left), children_right(children_right),
         children_default(children_default), features(features), thresholds(thresholds),
@@ -146,7 +132,6 @@ struct PathElement {
         feature_index(i), zero_fraction(z), one_fraction(o), pweight(w) {}
 };
 
-
 inline tfloat logistic_transform(const tfloat margin, const tfloat y) {
     return 1 / (1 + exp(-margin));
 }
@@ -159,6 +144,31 @@ inline tfloat squared_loss_transform(const tfloat margin, const tfloat y) {
     return (margin - y) * (margin - y);
 }
 
+namespace MODEL_TRANSFORM {
+    const unsigned identity = 0;
+    const unsigned logistic = 1;
+    const unsigned logistic_nlogloss = 2;
+    const unsigned squared_loss = 3;
+}
+
+inline transform_f get_transform(unsigned model_transform) {
+    transform_f transform = NULL;
+    switch (model_transform) {
+        case MODEL_TRANSFORM::logistic:
+            transform = logistic_transform;
+            break;
+
+        case MODEL_TRANSFORM::logistic_nlogloss:
+            transform = logistic_nlogloss_transform;
+            break;
+
+        case MODEL_TRANSFORM::squared_loss:
+            transform = squared_loss_transform;
+            break;
+    }
+
+    return transform;
+}
 
 inline tfloat *tree_predict(unsigned i, const TreeEnsemble &trees, const tfloat *x, const bool *x_missing) {
     const unsigned offset = i * trees.max_nodes;
@@ -189,26 +199,13 @@ inline void dense_tree_predict(tfloat *out, const TreeEnsemble &trees, const Exp
     const bool *x_missing = data.X_missing;
 
     // see what transform (if any) we have
-    tfloat (* transform)(const tfloat margin, const tfloat y) = NULL;
-    switch (model_transform) {
-        case MODEL_TRANSFORM::logistic:
-            transform = logistic_transform;
-            break;
-
-        case MODEL_TRANSFORM::logistic_nlogloss:
-            transform = logistic_nlogloss_transform;
-            break;
-
-        case MODEL_TRANSFORM::squared_loss:
-            transform = squared_loss_transform;
-            break;
-    }
+    transform_f transform = get_transform(model_transform);
 
     for (unsigned i = 0; i < data.num_X; ++i) {
 
         // add the base offset
         for (unsigned k = 0; k < trees.num_outputs; ++k) {
-            row_out[k] += trees.base_offset;
+            row_out[k] += trees.base_offset[k];
         }
 
         // add the leaf values from each tree
@@ -323,7 +320,7 @@ void dense_tree_saabas(tfloat *out_contribs, const TreeEnsemble& trees, const Ex
 
         // apply the base offset to the bias term
         for (unsigned j = 0; j < trees.num_outputs; ++j) {
-            instance_out_contribs[data.M * trees.num_outputs + j] += trees.base_offset;
+            instance_out_contribs[data.M * trees.num_outputs + j] += trees.base_offset[j];
         }
     }
 }
@@ -1188,7 +1185,7 @@ void dense_independent(const TreeEnsemble& trees, const ExplanationDataset &data
 
             // compute the model's margin output for x
             if (transform != NULL) {
-                margin_x = trees.base_offset;
+                margin_x = trees.base_offset[oind];
                 for (unsigned k = 0; k < trees.tree_limit; ++k) {
                     margin_x += tree_predict(k, trees, x, x_missing)[oind];
                 }
@@ -1201,7 +1198,7 @@ void dense_independent(const TreeEnsemble& trees, const ExplanationDataset &data
 
                 // compute the model's margin output for r
                 if (transform != NULL) {
-                    margin_r = trees.base_offset;
+                    margin_r = trees.base_offset[oind];
                     for (unsigned k = 0; k < trees.tree_limit; ++k) {
                         margin_r += tree_predict(k, trees, r, r_missing)[oind];
                     }
@@ -1233,9 +1230,9 @@ void dense_independent(const TreeEnsemble& trees, const ExplanationDataset &data
 
                 // Add the base offset
                 if (transform != NULL) {
-                    instance_out_contribs[data.M * trees.num_outputs + oind] += (*transform)(trees.base_offset + tmp_out_contribs[data.M], 0);
+                    instance_out_contribs[data.M * trees.num_outputs + oind] += (*transform)(trees.base_offset[oind] + tmp_out_contribs[data.M], 0);
                 } else {
-                    instance_out_contribs[data.M * trees.num_outputs + oind] += trees.base_offset + tmp_out_contribs[data.M];
+                    instance_out_contribs[data.M * trees.num_outputs + oind] += trees.base_offset[oind] + tmp_out_contribs[data.M];
                 }
             }
 
@@ -1246,7 +1243,7 @@ void dense_independent(const TreeEnsemble& trees, const ExplanationDataset &data
 
             // apply the base offset to the bias term
             // for (unsigned j = 0; j < trees.num_outputs; ++j) {
-            //     instance_out_contribs[data.M * trees.num_outputs + j] += (*transform)(trees.base_offset, 0);
+            //     instance_out_contribs[data.M * trees.num_outputs + j] += (*transform)(trees.base_offset[j], 0);
             // }
         }
     }
@@ -1284,7 +1281,7 @@ void dense_tree_path_dependent(const TreeEnsemble& trees, const ExplanationDatas
 
         // apply the base offset to the bias term
         for (unsigned j = 0; j < trees.num_outputs; ++j) {
-            instance_out_contribs[data.M * trees.num_outputs + j] += trees.base_offset;
+            instance_out_contribs[data.M * trees.num_outputs + j] += trees.base_offset[j];
         }
     }
 }
@@ -1376,7 +1373,7 @@ void dense_tree_interactions_path_dependent(const TreeEnsemble& trees, const Exp
         // apply the base offset to the bias term
         const unsigned last_ind = (data.M * (data.M + 1) + data.M) * trees.num_outputs;
         for (unsigned j = 0; j < trees.num_outputs; ++j) {
-            instance_out_contribs[last_ind + j] += trees.base_offset;
+            instance_out_contribs[last_ind + j] += trees.base_offset[j];
         }
     }
 
@@ -1419,7 +1416,7 @@ void dense_global_path_dependent(const TreeEnsemble& trees, const ExplanationDat
 
         // apply the base offset to the bias term
         for (unsigned j = 0; j < trees.num_outputs; ++j) {
-            instance_out_contribs[data.M * trees.num_outputs + j] += trees.base_offset;
+            instance_out_contribs[data.M * trees.num_outputs + j] += trees.base_offset[j];
         }
     }
 
@@ -1428,26 +1425,13 @@ void dense_global_path_dependent(const TreeEnsemble& trees, const ExplanationDat
 
 
 /**
- * The main method for computing Tree SHAP on model using dense data.
+ * The main method for computing Tree SHAP on models using dense data.
  */
 void dense_tree_shap(const TreeEnsemble& trees, const ExplanationDataset &data, tfloat *out_contribs,
                      const int feature_dependence, unsigned model_transform, bool interactions) {
 
     // see what transform (if any) we have
-    tfloat (* transform)(const tfloat margin, const tfloat y) = NULL;
-    switch (model_transform) {
-        case MODEL_TRANSFORM::logistic:
-            transform = logistic_transform;
-            break;
-
-        case MODEL_TRANSFORM::logistic_nlogloss:
-            transform = logistic_nlogloss_transform;
-            break;
-
-        case MODEL_TRANSFORM::squared_loss:
-            transform = squared_loss_transform;
-            break;
-    }
+    transform_f transform = get_transform(model_transform);
 
     // dispatch to the correct algorithm handler
     switch (feature_dependence) {

@@ -10,7 +10,7 @@ except ImportError:
     pass
 from . import labels
 from . import colors
-from ..common import convert_name, approximate_interactions
+from ..common import convert_name, approximate_interactions, encode_array_if_needed
 
 def dependence_plot(ind, shap_values, features, feature_names=None, display_features=None,
                     interaction_index="auto",
@@ -75,13 +75,9 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
     if cmap is None:
         cmap = colors.red_blue
 
-    # create a matplotlib figure, if `ax` hasn't been specified.
-    if not ax:
-        figsize = (7.5, 5) if interaction_index != ind else (6, 5)
-        fig = pl.figure(figsize=figsize)
-        ax = fig.gca()
-    else:
-        fig = ax.get_figure()
+    if type(shap_values) is list:
+        raise TypeError("The passed shap_values are a list not an array! If you have a list of explanations try " \
+                        "passing shap_values[0] instead to explain the first output class of a multi-output model.")
 
     # convert from DataFrames if we got any
     if str(type(features)).endswith("'pandas.core.frame.DataFrame'>"):
@@ -106,14 +102,33 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
 
     ind = convert_name(ind, shap_values, feature_names)
 
+    # guess what other feature as the stongest interaction with the plotted feature
+    if not hasattr(ind, "__len__"):
+        if interaction_index == "auto":
+            interaction_index = approximate_interactions(ind, shap_values, features)[0]
+        interaction_index = convert_name(interaction_index, shap_values, feature_names)
+    categorical_interaction = False
+
+    # create a matplotlib figure, if `ax` hasn't been specified.
+    if not ax:
+        figsize = (7.5, 5) if interaction_index != ind and interaction_index is not None else (6, 5)
+        fig = pl.figure(figsize=figsize)
+        ax = fig.gca()
+    else:
+        fig = ax.get_figure()
+
     # plotting SHAP interaction values
-    if len(shap_values.shape) == 3 and len(ind) == 2:
+    if len(shap_values.shape) == 3 and hasattr(ind, "__len__") and len(ind) == 2:
         ind1 = convert_name(ind[0], shap_values, feature_names)
         ind2 = convert_name(ind[1], shap_values, feature_names)
         if ind1 == ind2:
             proj_shap_values = shap_values[:, ind2, :]
         else:
             proj_shap_values = shap_values[:, ind2, :] * 2  # off-diag values are split in half
+
+        # there is no interaction coloring for the main effect
+        if ind1 == ind2:
+            fig.set_size_inches(6, 5, forward=True)
 
         # TODO: remove recursion; generally the functions should be shorter for more maintainable code
         dependence_plot(
@@ -138,7 +153,9 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
     # get both the raw and display feature values
     oinds = np.arange(shap_values.shape[0]) # we randomize the ordering so plotting overlaps are not related to data ordering
     np.random.shuffle(oinds)
-    xv = features[oinds, ind].astype(np.float64)
+
+    xv = encode_array_if_needed(features[oinds, ind])
+
     xd = display_features[oinds, ind]
     s = shap_values[oinds, ind]
     if type(xd[0]) == str:
@@ -152,16 +169,11 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
         feature_names = [feature_names]
     name = feature_names[ind]
 
-    # guess what other feature as the stongest interaction with the plotted feature
-    if interaction_index == "auto":
-        interaction_index = approximate_interactions(ind, shap_values, features)[0]
-    interaction_index = convert_name(interaction_index, shap_values, feature_names)
-    categorical_interaction = False
-
     # get both the raw and display color values
     color_norm = None
     if interaction_index is not None:
-        cv = features[:, interaction_index]
+        interaction_feature_values = encode_array_if_needed(features[:, interaction_index])
+        cv = interaction_feature_values
         cd = display_features[:, interaction_index]
         clow = np.nanpercentile(cv.astype(np.float), 5)
         chigh = np.nanpercentile(cv.astype(np.float), 95)
@@ -191,9 +203,9 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
         if isinstance(xvals[0], float):
             xvals = xvals.astype(np.float)
             xvals = xvals[~np.isnan(xvals)]
-        xvals = np.unique(xvals)
+        xvals = np.unique(xvals) # returns a sorted array
         if len(xvals) >= 2:
-            smallest_diff = np.min(np.diff(np.sort(xvals)))
+            smallest_diff = np.min(np.diff(xvals))
             jitter_amount = x_jitter * smallest_diff
             xv += (np.random.ranf(size = len(xv))*jitter_amount) - (jitter_amount/2)
 
@@ -203,7 +215,7 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
     if interaction_index is not None:
 
         # plot the nan values in the interaction feature as grey
-        cvals = features[oinds, interaction_index].astype(np.float64)
+        cvals = interaction_feature_values[oinds].astype(np.float64)
         cvals_imp = cvals.copy()
         cvals_imp[np.isnan(cvals)] = (clow + chigh) / 2.0
         cvals[cvals_imp > chigh] = chigh
@@ -225,10 +237,10 @@ def dependence_plot(ind, shap_values, features, feature_names=None, display_feat
             if len(tick_positions) == 2:
                 tick_positions[0] -= 0.25
                 tick_positions[1] += 0.25
-            cb = pl.colorbar(p, ticks=tick_positions)
+            cb = pl.colorbar(p, ticks=tick_positions, ax=ax)
             cb.set_ticklabels(cnames)
         else:
-            cb = pl.colorbar(p)
+            cb = pl.colorbar(p, ax=ax)
 
         cb.set_label(feature_names[interaction_index], size=13)
         cb.ax.tick_params(labelsize=11)
