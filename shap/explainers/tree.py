@@ -1454,7 +1454,11 @@ class XGBTreeModelLoader(object):
         return val
 
     def read_str(self, size):
-        val = self.buf[self.pos:self.pos+size].decode('utf-8')
+        try:
+            val = self.buf[self.pos:self.pos+size].decode('utf-8')
+        Except:
+            print('Use latin-1 instead')
+            val = self.buf[self.pos:self.pos+size].decode('latin-1')
         self.pos += size
         return val
 
